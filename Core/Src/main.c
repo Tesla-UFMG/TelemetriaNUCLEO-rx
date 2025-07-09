@@ -50,8 +50,8 @@
 #define LORA_BANDWIDTH                              0         /* Hz */
 #define LORA_SPREADING_FACTOR                       7
 #define LORA_CODINGRATE                             1
-#define LORA_PREAMBLE_LENGTH                        8         /* Same for Tx and Rx */
-#define LORA_SYMBOL_TIMEOUT                         5         /* Symbols */
+#define LORA_PREAMBLE_LENGTH                        8         /* Configurar igual no Tx e Rx */
+#define LORA_SYMBOL_TIMEOUT                         5
 
 /* USER CODE END PM */
 
@@ -71,6 +71,8 @@ const char *status;
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
+int __io_putchar(int ch);
+int _write(int file, char *ptr, int len);
 void RadioOnDioIrq(RadioIrqMasks_t radioIrq);
 void radioInit(void);
 
@@ -89,9 +91,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
-  char uartBuff[100];
-  int len;
 
   /* USER CODE END 1 */
 
@@ -152,9 +151,9 @@ int main(void)
   BSP_LED_Init(LED_GREEN);
   BSP_LED_Init(LED_RED);
 
-  strcpy(uartBuff, "\n\n\n\rTELEMETRIA SLAVE - FORMULA TESLA UFMG\r\nVERSAO=1.0\r\n---------------\r\n");
-  HAL_UART_Transmit(&huart2, (uint8_t *)uartBuff, strlen(uartBuff), HAL_MAX_DELAY);
   radioInit();
+
+  printf("\n\n\n\rTELEMETRIA SLAVE - FORMULA TESLA UFMG\r\nVERSAO=1.0\r\n---------------\r\n");
 
   /* USER CODE END 2 */
 
@@ -170,40 +169,36 @@ int main(void)
 
   while (1)
   {
+	/* Recebe pacote de dados por LoRa */
 	rxDone = rxTimeout = rxError = false;
-
 	SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
-	SUBGRF_SetRx(3000 << 6);  // timeout de 3 segundos
-
+	SUBGRF_SetRx(3000 << 6);
 	while (!rxDone && !rxTimeout && !rxError);
 
+	/* Verifica flags e imprime status do processo */
 	if (rxError)    status = "CRC ERR";
 	else if (rxTimeout) status = "TIMEOUT";
 	else             status = "OK";
-
-	len = 0;
-	len += sprintf(uartBuff + len,
-	  "\r\n\r\n"
-	  "Status: %s\r\n", status);
-
+	printf("\r\n\r\nStatus: %s\r\n", status);
+	/* Se o processo foi concluido com sucesso, imprime os dados recebidos
+	 * e pisca o LED verde; Senao, pisca o LED vermelho */
 	if (rxDone)
 	{
-
 	  SUBGRF_GetPayload(rxBuf, &rxSize, 0xFF);
-	  len += sprintf(uartBuff + len,
-		  "Payload (%d bytes): ", rxSize);
+	  printf("Payload (%d bytes): ", rxSize);
 	  for (int i = 0; i < 8; i++) {
-		  len += sprintf(uartBuff + len, "%02X ", rxBuf[i]);
+		  printf("%02X ", rxBuf[i]);
 	  }
-	}
-
-	HAL_UART_Transmit(&huart2, (uint8_t*)uartBuff, len, HAL_MAX_DELAY);
-
-	if (rxDone) {
+	  BSP_LED_Off(LED_RED);
 	  BSP_LED_Toggle(LED_GREEN);
-	}
+	} else {
+      BSP_LED_Off(LED_GREEN);
+      BSP_LED_Toggle(LED_RED);
+    }
 
-	HAL_Delay(100);  // pequeno intervalo antes de reiniciar o RX
+	/* Pausa */
+	HAL_Delay(100);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -254,6 +249,26 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* @brief Redireciona um caracter para escrita no monitor serial, via UART2
+ * @param ch Caracter
+ * @retval Caracter escrito
+ */
+int __io_putchar(int ch) {
+    HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
+    return ch;
+}
+
+/* @brief Redireciona um ponteiro oara vetor de caracteres
+ * @param file Stream de destino
+ * @param ptr Ponteiro para o vetor de caracteres
+ * @param len Comprimento do vetor de caracteres
+ * @retval Tamanho do vetor de caracteres redirecionado
+ */
+int _write(int file, char *ptr, int len) {
+    HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, HAL_MAX_DELAY);
+    return len;
+}
 
 /**
   * @brief  Initialize the Sub-GHz radio and dependent hardware.
