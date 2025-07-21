@@ -18,17 +18,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "i2c.h"
 #include "subghz.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
-#include <string.h>
-#include <stdio.h>
-#include "radio_driver.h"
-#include "stm32wlxx_nucleo.h"
 
 /* USER CODE END Includes */
 
@@ -45,25 +41,15 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
-#define RF_FREQUENCY                                868000000 /* Hz */
-#define TX_OUTPUT_POWER                             14        /* dBm */
-#define LORA_BANDWIDTH                              0         /* Hz */
-#define LORA_SPREADING_FACTOR                       7
-#define LORA_CODINGRATE                             1
-#define LORA_PREAMBLE_LENGTH                        8         /* Configurar igual no Tx e Rx */
-#define LORA_SYMBOL_TIMEOUT                         5
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
 
-volatile bool rxDone, rxTimeout, rxError;
-uint8_t rxBuf[256];
-uint8_t rxSize;
-char uartBuff[128];
-const char *status;
+volatile bool tx_done, tx_timeout, rx_done, rx_error, rx_timeout;
+uint8_t lora_buff[STD_BUFFER_SIZE];
+bool i2c_enabled, enable_lora_tx, enable_lora_rx, rng_mode;
 
 /* USER CODE END PV */
 
@@ -144,60 +130,108 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_I2C1_Init();
   MX_SUBGHZ_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  radioInit();
+
+  /* USER CODE END 2 */
+
+  /* Initialize leds */
+  BSP_LED_Init(LED_BLUE);
   BSP_LED_Init(LED_GREEN);
   BSP_LED_Init(LED_RED);
 
-  radioInit();
-
-  printf("\n\n\n\rTELEMETRIA SLAVE - FORMULA TESLA UFMG\r\nVERSAO=1.0\r\n---------------\r\n");
-
-  /* USER CODE END 2 */
+  /* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
+  BSP_PB_Init(BUTTON_SW1, BUTTON_MODE_EXTI);
+  BSP_PB_Init(BUTTON_SW2, BUTTON_MODE_EXTI);
+  BSP_PB_Init(BUTTON_SW3, BUTTON_MODE_EXTI);
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
-  SUBGRF_SetDioIrqParams(
-          IRQ_RX_DONE   | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
-          IRQ_RX_DONE   | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
-          IRQ_RADIO_NONE,
-          IRQ_RADIO_NONE
-  );
+  SUBGRF_SetDioIrqParams(IRQ_TX_DONE | IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                         IRQ_TX_DONE | IRQ_RX_DONE | IRQ_RX_TX_TIMEOUT | IRQ_CRC_ERROR,
+                         IRQ_RADIO_NONE,
+                         IRQ_RADIO_NONE);
+
+  i2c_enabled = true;
+  enable_lora_tx = true;
+  enable_lora_rx = false;
+  rng_mode = false;
+
+  if(i2c_enabled) {
+	  HAL_I2C_Slave_Receive_IT(&hi2c1, i2c_buff, STD_BUFFER_SIZE);
+  }
+
+  printf("\rTELEMETRIA NUCLEO V1.1 (2025)\n\r");
 
   while (1)
   {
-	/* Recebe pacote de dados por LoRa */
-	rxDone = rxTimeout = rxError = false;
-	SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
-	SUBGRF_SetRx(3000 << 6);
-	while (!rxDone && !rxTimeout && !rxError);
 
-	/* Verifica flags e imprime status do processo */
-	if (rxError)    status = "CRC ERR";
-	else if (rxTimeout) status = "TIMEOUT";
-	else             status = "OK";
-	printf("\r\n\r\nStatus: %s\r\n", status);
-	/* Se o processo foi concluido com sucesso, imprime os dados recebidos
-	 * e pisca o LED verde; Senao, pisca o LED vermelho */
-	if (rxDone)
-	{
-	  SUBGRF_GetPayload(rxBuf, &rxSize, 0xFF);
-	  printf("Payload (%d bytes): ", rxSize);
-	  for (int i = 0; i < 8; i++) {
-		  printf("%02X ", rxBuf[i]);
-	  }
-	  BSP_LED_Off(LED_RED);
-	  BSP_LED_Toggle(LED_GREEN);
-	} else {
-      BSP_LED_Off(LED_GREEN);
-      BSP_LED_Toggle(LED_RED);
+    if (enable_lora_tx) {
+
+    	if(i2c_enabled) {
+    		memcpy(lora_buff, i2c_buff, STD_BUFFER_SIZE);
+    	}
+
+    	if(rng_mode) {
+    		lora_buff[0] = 0x01;
+    		for(uint8_t i = 1; i < STD_BUFFER_SIZE; i++){
+    			lora_buff[i] = random() % 0xFF;
+    		}
+    	}
+
+	    tx_done = false;
+	    tx_timeout = false;
+
+	    SUBGRF_SetSwitch(RFO_LP, RFSWITCH_TX);
+	    SUBGRF_SendPayload(lora_buff, sizeof(lora_buff), 0);
+
+	    while (!tx_done && !tx_timeout) {
+	    }
+
+	    if (tx_done) {
+
+
+		  printf("\r\nlora_buff: ");
+		  for (int i = 0; i < sizeof(lora_buff); i++) {
+			  printf("%02X ", lora_buff[i]);
+		  }
+
+
+		  BSP_LED_Off(LED_RED);
+		  BSP_LED_Toggle(LED_GREEN);
+
+	    } else if (tx_timeout) {
+		  BSP_LED_Toggle(LED_RED);
+	    }
+    } else if (enable_lora_rx) {
+
+    	rx_done = rx_timeout = rx_error = false;
+        SUBGRF_SetSwitch(RFO_LP, RFSWITCH_RX);
+    	SUBGRF_SetRx(3000 << 6);
+    	while (!rx_done && !rx_timeout && !rx_error);
+
+    	if (rx_done)
+		{
+    	  uint8_t rx_size;
+		  SUBGRF_GetPayload(lora_buff, &rx_size, 0xFF);
+		  printf("\r\nlora_buff: ");
+		  for (int i = 0; i < sizeof(lora_buff); i++) {
+			  printf("%02X ", lora_buff[i]);
+		  }
+		  BSP_LED_Off(LED_RED);
+		  BSP_LED_Toggle(LED_GREEN);
+		} else {
+		  BSP_LED_Off(LED_GREEN);
+		  BSP_LED_Toggle(LED_RED);
+		}
     }
 
-	/* Pausa */
-	HAL_Delay(100);
+    HAL_Delay(SLEEP_TIME);
 
     /* USER CODE END WHILE */
 
@@ -217,14 +251,14 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_11;
+  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -242,7 +276,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
   {
     Error_Handler();
   }
@@ -302,7 +336,7 @@ void radioInit(void)
       .CrcMode        = LORA_CRC_ON,
       .HeaderType     = LORA_PACKET_VARIABLE_LENGTH,
       .InvertIQ       = LORA_IQ_NORMAL,
-      .PayloadLength  = 0xFF,          // valor “max” genérico
+      .PayloadLength  = STD_BUFFER_SIZE,
       .PreambleLength = LORA_PREAMBLE_LENGTH
     }
   };
@@ -316,11 +350,11 @@ void radioInit(void)
   */
 void RadioOnDioIrq(RadioIrqMasks_t irq)
 {
-  if (irq == IRQ_RX_DONE)           rxDone    = true;
-  else if (irq == IRQ_RX_TX_TIMEOUT) rxTimeout = true;
-  else if (irq == IRQ_CRC_ERROR)     rxError   = true;
+  if(irq == IRQ_TX_DONE)        tx_done    = true;
+  else if(irq == IRQ_RX_TX_TIMEOUT) { tx_timeout = true; rx_timeout = true; }
+  else if (irq == IRQ_RX_DONE) rx_done = true;
+  else if (irq == IRQ_CRC_ERROR) rx_error = true;
 }
-
 
 /* USER CODE END 4 */
 
@@ -338,8 +372,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
