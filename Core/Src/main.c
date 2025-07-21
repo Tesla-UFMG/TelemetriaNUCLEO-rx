@@ -157,9 +157,9 @@ int main(void)
                          IRQ_RADIO_NONE,
                          IRQ_RADIO_NONE);
 
-  i2c_enabled = true;
-  enable_lora_tx = true;
-  enable_lora_rx = false;
+  i2c_enabled = false;
+  enable_lora_tx = false;
+  enable_lora_rx = true;
   rng_mode = false;
 
   if(i2c_enabled) {
